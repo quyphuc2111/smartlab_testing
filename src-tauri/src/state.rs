@@ -10,7 +10,8 @@ pub struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        let (tx, _rx) = broadcast::channel(100);
+        // Increase buffer size to handle more chunks before lagging
+        let (tx, _rx) = broadcast::channel(1000);
         Self {
             server_stop_tx: Arc::new(Mutex::new(None)),
             video_tx: tx,

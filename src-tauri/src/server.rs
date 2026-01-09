@@ -88,11 +88,17 @@ pub async fn start_server(
                            let header_store = header_store.clone();
                             let mut rx = video_tx.subscribe();
                             
+                            let app_client = app_tcp.clone();
                             tokio::spawn(async move {
                                 let mut ws_stream = match accept_async(stream).await {
                                     Ok(s) => s,
-                                    Err(_) => return,
+                                    Err(e) => {
+                                        let _ = app_client.emit("log-message", format!("WebSocket handshake failed: {}", e));
+                                        return;
+                                    }
                                 };
+
+                                let _ = app_client.emit("log-message", "WebSocket handshake completed".to_string());
 
                                 // 1. Send Header if exists
                                 {
@@ -102,14 +108,38 @@ pub async fn start_server(
                                     };
                                     
                                     if let Some(h) = initial_header {
-                                        let _ = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(h)).await;
+                                        let _ = app_client.emit("log-message", format!("Sending header to client ({} bytes)", h.len()));
+                                        if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(h.into())).await {
+                                            let _ = app_client.emit("log-message", format!("Failed to send header: {}", e));
+                                            return;
+                                        }
+                                    } else {
+                                        let _ = app_client.emit("log-message", "No header available yet".to_string());
                                     }
                                 }
                                 
                                 // 2. Stream Loop
-                                while let Ok(msg) = rx.recv().await {
-                                    if let Err(_) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(msg)).await {
-                                        break; 
+                                let mut chunk_count = 0u64;
+                                loop {
+                                    match rx.recv().await {
+                                        Ok(msg) => {
+                                            chunk_count += 1;
+                                            if chunk_count % 50 == 1 {
+                                                let _ = app_client.emit("log-message", format!("Streaming chunk #{} ({} bytes)", chunk_count, msg.len()));
+                                            }
+                                            if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(msg.into())).await {
+                                                let _ = app_client.emit("log-message", format!("Client disconnected: {}", e));
+                                                break; 
+                                            }
+                                        }
+                                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                                            let _ = app_client.emit("log-message", format!("Warning: Client lagged, skipped {} chunks", n));
+                                            // Continue receiving
+                                        }
+                                        Err(broadcast::error::RecvError::Closed) => {
+                                            let _ = app_client.emit("log-message", "Broadcast channel closed".to_string());
+                                            break;
+                                        }
                                     }
                                 }
                             });
