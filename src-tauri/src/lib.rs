@@ -2,13 +2,18 @@ pub mod server;
 pub mod client;
 pub mod state;
 pub mod capture;
+pub mod encoder;
+pub mod decoder;
+pub mod yuv;
+pub mod protocol;
 
 use state::AppState;
 use capture::{CaptureState, DisplayInfo};
+use client::ReceiverState;
 
 #[tauri::command]
-async fn start_server_cmd(app: tauri::AppHandle, port: u16, state: tauri::State<'_, AppState>) -> Result<String, String> {
-    server::start_server(app, port, state).await
+async fn start_server_cmd(app: tauri::AppHandle, port: u16, name: Option<String>, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    server::start_server(app, port, name, state).await
 }
 
 #[tauri::command]
@@ -50,6 +55,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .manage(CaptureState::default())
+        .manage(ReceiverState::default())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             start_server_cmd,
@@ -59,7 +65,9 @@ pub fn run() {
             stop_capture,
             client::start_discovery,
             client::start_video_receiver,
-            client::stop_video_receiver
+            client::stop_video_receiver,
+            client::start_tcp_video_receiver,
+            client::stop_tcp_video_receiver
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
