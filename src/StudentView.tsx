@@ -10,9 +10,9 @@ interface ServerInfo {
 
 export default function StudentView() {
     const [servers, setServers] = useState<ServerInfo[]>([]);
-    const [connected, setConnected] = useState(false);
+    const [receiving, setReceiving] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const wsRef = useRef<WebSocket | null>(null);
+    const frameCountRef = useRef(0);
 
     useEffect(() => {
         frontendLog("Starting Discovery...");
@@ -32,88 +32,89 @@ export default function StudentView() {
         };
     }, []);
 
-    const connectToServer = (ip: string, port: number) => {
-        if (connected) return;
-
-        frontendLog(`Connecting to ws://${ip}:${port}...`);
-        const ws = new WebSocket(`ws://${ip}:${port}`);
-        ws.binaryType = "arraybuffer";
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-            frontendLog("WebSocket Connected.");
-            setConnected(true);
-        };
-
-        ws.onmessage = async (event) => {
-            const data = new Uint8Array(event.data);
-            if (data.length > 0) {
-                // Decode JPEG and draw to canvas
-                const blob = new Blob([data], { type: 'image/jpeg' });
-                const url = URL.createObjectURL(blob);
-                const img = new Image();
-                img.onload = () => {
-                    const canvas = canvasRef.current;
-                    if (canvas) {
-                        canvas.width = img.width;
-                        canvas.height = img.height;
-                        const ctx = canvas.getContext('2d');
-                        if (ctx) {
-                            ctx.drawImage(img, 0, 0);
-                        }
-                    }
-                    URL.revokeObjectURL(url);
-                };
-                img.src = url;
-            }
-        };
-
-        ws.onclose = () => {
-            frontendLog("WebSocket Disconnected.");
-            setConnected(false);
-        };
-
-        ws.onerror = (e) => {
-            frontendLog(`WebSocket Error: ${e}`);
-        };
+    const startReceiving = async () => {
+        try {
+            frontendLog("Starting video receiver...");
+            await invoke("start_video_receiver");
+            setReceiving(true);
+            frontendLog("Video receiver started. Waiting for frames...");
+        } catch (e) {
+            frontendLog(`Error: ${e}`);
+        }
     };
 
-    const disconnect = () => {
-        if (wsRef.current) wsRef.current.close();
-        setConnected(false);
+    const stopReceiving = async () => {
+        await invoke("stop_video_receiver");
+        setReceiving(false);
         setServers([]);
+        frameCountRef.current = 0;
         invoke("start_discovery").catch(console.error);
     };
+
+    // Listen for video frames
+    useEffect(() => {
+        if (!receiving) return;
+
+        const unlisten = listen<number[]>("video-frame", (event) => {
+            frameCountRef.current++;
+            const frameData = new Uint8Array(event.payload);
+            
+            // Decode JPEG and draw to canvas
+            const blob = new Blob([frameData], { type: 'image/jpeg' });
+            const url = URL.createObjectURL(blob);
+            const img = new Image();
+            img.onload = () => {
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    if (ctx) {
+                        ctx.drawImage(img, 0, 0);
+                    }
+                }
+                URL.revokeObjectURL(url);
+            };
+            img.src = url;
+            
+            if (frameCountRef.current % 30 === 1) {
+                frontendLog(`Received frame #${frameCountRef.current}`);
+            }
+        });
+
+        return () => {
+            unlisten.then(f => f());
+        };
+    }, [receiving]);
 
     return (
         <div className="card">
             <h2>Student Mode</h2>
-            {!connected ? (
+            {!receiving ? (
                 <div>
                     <h3>Available Servers:</h3>
                     {servers.length === 0 && <p>Scanning...</p>}
                     {servers.map((s) => (
                         <div key={`${s.ip}:${s.port}`} className="server-item" style={{ margin: '5px 0' }}>
                             <span>{s.ip}:{s.port}</span>
-                            <button onClick={() => connectToServer(s.ip, s.port)} style={{ marginLeft: '10px' }}>
-                                Connect
-                            </button>
                         </div>
                     ))}
-                    <div style={{ marginTop: '20px' }}>
-                        <p>Manual Connect:</p>
-                        <input id="manual-ip" placeholder="IP" style={{ marginRight: '5px' }} />
-                        <input id="manual-port" placeholder="Port" type="number" defaultValue={8080} style={{ marginRight: '5px', width: '80px' }} />
-                        <button onClick={() => {
-                            const ip = (document.getElementById('manual-ip') as HTMLInputElement).value;
-                            const port = (document.getElementById('manual-port') as HTMLInputElement).value;
-                            if (ip && port) connectToServer(ip, Number(port));
-                        }}>Connect</button>
-                    </div>
+                    
+                    {servers.length > 0 && (
+                        <button onClick={startReceiving} style={{ marginTop: '15px' }}>
+                            Start Receiving
+                        </button>
+                    )}
+                    
+                    <p style={{ marginTop: '10px', fontSize: '12px', color: '#888' }}>
+                        Video is broadcast via UDP multicast - just click "Start Receiving" when a server is found.
+                    </p>
                 </div>
             ) : (
                 <div>
-                    <button onClick={disconnect} style={{ marginBottom: '10px' }}>Disconnect</button>
+                    <button onClick={stopReceiving} style={{ marginBottom: '10px', backgroundColor: '#cc3333' }}>
+                        Stop Receiving
+                    </button>
                     <canvas
                         ref={canvasRef}
                         style={{ width: '100%', border: '1px solid #666', backgroundColor: '#000' }}

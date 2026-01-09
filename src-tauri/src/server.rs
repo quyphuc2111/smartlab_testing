@@ -1,15 +1,14 @@
 use std::net::SocketAddr;
-// use std::sync::Arc; // Unused
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
-use tokio_tungstenite::accept_async;
-use futures_util::SinkExt; // Needed for .send()
 use serde::Serialize;
 use local_ip_address::local_ip;
-
-use crate::state::AppState;
+use tauri::{AppHandle, Emitter};
 
 const DISCOVERY_PORT: u16 = 34254;
+const MULTICAST_ADDR: &str = "239.255.0.1";
+const MULTICAST_PORT: u16 = 34255;
+const MAX_UDP_PAYLOAD: usize = 65000; // Safe UDP payload size
 
 #[derive(Clone, Serialize)]
 pub struct ServerInfo {
@@ -17,18 +16,12 @@ pub struct ServerInfo {
     pub port: u16,
 }
 
-use tauri::{AppHandle, Emitter};
-
 pub async fn start_server(
     app: AppHandle,
     port: u16,
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<String, String> {
     // Check if server is already running
-    // Scope the lock to ensure it is dropped before any await
-    // RE-THINKING Logic for Block 1:
-    // We need 'stop_tx' for lines below.
-    
     let stop_tx = {
         let mut server_chk = state.server_stop_tx.lock().unwrap();
         if server_chk.is_some() {
@@ -39,117 +32,80 @@ pub async fn start_server(
         tx
     };
 
-    // Get Local IP
     let my_local_ip = local_ip().map_err(|e| e.to_string())?;
 
-
-    // 1. UDP Broadcaster Task
+    // 1. UDP Discovery Broadcaster
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
     let _ = udp_socket.set_broadcast(true);
     let broadcast_addr: SocketAddr = format!("255.255.255.255:{}", DISCOVERY_PORT).parse().unwrap();
     let discovery_msg = format!("SCREEN_SHARE_SERVER:{}:{}", my_local_ip, port);
     
     let mut udp_stop_rx = stop_tx.subscribe();
-    
     let app_udp = app.clone();
     let _ = app.emit("log-message", format!("UDP Discovery started at {}:{}", my_local_ip, port));
 
     tokio::spawn(async move {
         loop {
-             tokio::select! {
+            tokio::select! {
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
                     let _ = udp_socket.send_to(discovery_msg.as_bytes(), broadcast_addr).await;
-                    // let _ = app_udp.emit("log-message", "Broadcasting presence...".to_string()); // Too spammy?
                 }
                 _ = udp_stop_rx.recv() => {
-                     let _ = app_udp.emit("log-message", "UDP Discovery stopped");
+                    let _ = app_udp.emit("log-message", "UDP Discovery stopped");
                     break;
                 }
             }
         }
     });
 
-    // 2. TCP WebSocket Server Task
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.map_err(|e| e.to_string())?;
-    let header_store = state.header.clone();
-    let video_tx = state.video_tx.clone();
-    let mut tcp_stop_rx = stop_tx.subscribe();
+    // 2. UDP Multicast Video Streamer
+    let multicast_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
+    let multicast_addr: SocketAddr = format!("{}:{}", MULTICAST_ADDR, MULTICAST_PORT).parse().unwrap();
     
-    let app_tcp = app.clone();
-    let _ = app.emit("log-message", format!("TCP Server listening on port {}", port));
+    let video_rx = state.video_tx.subscribe();
+    let mut stream_stop_rx = stop_tx.subscribe();
+    let app_stream = app.clone();
+    
+    let _ = app.emit("log-message", format!("Multicast streaming to {}:{}", MULTICAST_ADDR, MULTICAST_PORT));
 
     tokio::spawn(async move {
-         loop {
+        let mut rx = video_rx;
+        let mut frame_count = 0u64;
+        
+        loop {
             tokio::select! {
-                res = listener.accept() => {
-                    match res {
-                        Ok((stream, addr)) => {
-                           let _ = app_tcp.emit("log-message", format!("New client connection from: {}", addr));
-                           let header_store = header_store.clone();
-                            let mut rx = video_tx.subscribe();
+                result = rx.recv() => {
+                    match result {
+                        Ok(frame_data) => {
+                            frame_count += 1;
                             
-                            let app_client = app_tcp.clone();
-                            tokio::spawn(async move {
-                                let mut ws_stream = match accept_async(stream).await {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        let _ = app_client.emit("log-message", format!("WebSocket handshake failed: {}", e));
-                                        return;
-                                    }
-                                };
-
-                                let _ = app_client.emit("log-message", "WebSocket handshake completed".to_string());
-
-                                // 1. Send Header if exists
-                                {
-                                    let initial_header = {
-                                        let lock = header_store.lock().unwrap();
-                                        lock.clone()
-                                    };
-                                    
-                                    if let Some(h) = initial_header {
-                                        let _ = app_client.emit("log-message", format!("Sending header to client ({} bytes)", h.len()));
-                                        if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(h.into())).await {
-                                            let _ = app_client.emit("log-message", format!("Failed to send header: {}", e));
-                                            return;
-                                        }
-                                    } else {
-                                        let _ = app_client.emit("log-message", "No header available yet".to_string());
-                                    }
-                                }
+                            // Split large frames into chunks
+                            let chunks: Vec<&[u8]> = frame_data.chunks(MAX_UDP_PAYLOAD - 8).collect();
+                            let total_chunks = chunks.len() as u16;
+                            
+                            for (i, chunk) in chunks.iter().enumerate() {
+                                // Header: frame_id (4 bytes) + chunk_index (2 bytes) + total_chunks (2 bytes)
+                                let mut packet = Vec::with_capacity(8 + chunk.len());
+                                packet.extend_from_slice(&(frame_count as u32).to_be_bytes());
+                                packet.extend_from_slice(&(i as u16).to_be_bytes());
+                                packet.extend_from_slice(&total_chunks.to_be_bytes());
+                                packet.extend_from_slice(chunk);
                                 
-                                // 2. Stream Loop
-                                let mut chunk_count = 0u64;
-                                loop {
-                                    match rx.recv().await {
-                                        Ok(msg) => {
-                                            chunk_count += 1;
-                                            if chunk_count % 50 == 1 {
-                                                let _ = app_client.emit("log-message", format!("Streaming chunk #{} ({} bytes)", chunk_count, msg.len()));
-                                            }
-                                            if let Err(e) = ws_stream.send(tokio_tungstenite::tungstenite::Message::Binary(msg.into())).await {
-                                                let _ = app_client.emit("log-message", format!("Client disconnected: {}", e));
-                                                break; 
-                                            }
-                                        }
-                                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                                            let _ = app_client.emit("log-message", format!("Warning: Client lagged, skipped {} chunks", n));
-                                            // Continue receiving
-                                        }
-                                        Err(broadcast::error::RecvError::Closed) => {
-                                            let _ = app_client.emit("log-message", "Broadcast channel closed".to_string());
-                                            break;
-                                        }
-                                    }
-                                }
-                            });
+                                let _ = multicast_socket.send_to(&packet, multicast_addr).await;
+                            }
+                            
+                            if frame_count % 30 == 1 {
+                                let _ = app_stream.emit("log-message", format!("Streamed frame #{} ({} bytes, {} chunks)", frame_count, frame_data.len(), total_chunks));
+                            }
                         }
-                        Err(_e) => { 
-                             // Accept error, maybe continue?
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            let _ = app_stream.emit("log-message", format!("Warning: Skipped {} frames", n));
                         }
+                        Err(_) => break,
                     }
                 }
-                _ = tcp_stop_rx.recv() => {
+                _ = stream_stop_rx.recv() => {
+                    let _ = app_stream.emit("log-message", "Multicast streaming stopped");
                     break;
                 }
             }
@@ -159,16 +115,11 @@ pub async fn start_server(
     Ok(my_local_ip.to_string())
 }
 
-pub async fn stop_server(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_server(app: AppHandle, state: tauri::State<'_, crate::state::AppState>) -> Result<(), String> {
     let _ = app.emit("log-message", "Stopping server...");
     let mut server_chk = state.server_stop_tx.lock().unwrap();
     if let Some(tx) = server_chk.take() {
-        let _ = tx.send(()); // Signal stop
+        let _ = tx.send(());
     }
-    
-    // Clear header cache on stop? Maybe. 
-    // let mut header = state.header.lock().unwrap();
-    // *header = None;
-    
     Ok(())
 }

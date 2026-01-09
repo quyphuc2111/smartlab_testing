@@ -57,7 +57,9 @@ pub fn run() {
             get_displays,
             start_capture,
             stop_capture,
-            client::start_discovery
+            client::start_discovery,
+            client::start_video_receiver,
+            client::stop_video_receiver
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
