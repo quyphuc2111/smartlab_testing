@@ -1,82 +1,53 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { frontendLog } from "./LogPanel";
+
+interface DisplayInfo {
+    index: number;
+    width: number;
+    height: number;
+    name: string;
+}
 
 export default function TeacherView() {
     const [isSharing, setIsSharing] = useState(false);
     const [port, setPort] = useState(8080);
-    const [codec, setCodec] = useState("video/webm; codecs=vp9");
-    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-    const streamRef = useRef<MediaStream | null>(null);
+    const [fps, setFps] = useState(15);
+    const [quality, setQuality] = useState(70);
+    const [displays, setDisplays] = useState<DisplayInfo[]>([]);
+    const [selectedDisplay, setSelectedDisplay] = useState(0);
 
-    // Cleanup on unmount
     useEffect(() => {
-        return () => {
-            if (isSharing) {
-                stopSharing();
-            }
-        };
-    }, [isSharing]);
+        // Load available displays
+        invoke<DisplayInfo[]>("get_displays")
+            .then(setDisplays)
+            .catch((e) => frontendLog(`Error getting displays: ${e}`));
+    }, []);
 
     const startSharing = async () => {
         try {
             frontendLog(`Starting Server on port ${port}...`);
-            // 1. Start Server
             await invoke("start_server_cmd", { port });
 
-            frontendLog("Selecting Screen...");
-            // 2. Capture Screen
-            const stream = await navigator.mediaDevices.getDisplayMedia({
-                video: { cursor: "always" },
-                audio: false // Audio adds complexity to MSE, skipping for now
-            } as any);
+            frontendLog(`Starting capture on display ${selectedDisplay}...`);
+            await invoke("start_capture", {
+                displayIndex: selectedDisplay,
+                fps,
+                quality,
+            });
 
-            streamRef.current = stream;
-
-            // 3. Init Recorder
-            const recorder = new MediaRecorder(stream, { mimeType: codec });
-            mediaRecorderRef.current = recorder;
-
-            let isFirstChunk = true;
-            recorder.ondataavailable = async (e) => {
-                if (e.data.size > 0) {
-                    const buffer = await e.data.arrayBuffer();
-                    const bytes = new Uint8Array(buffer);
-
-                    if (isFirstChunk) {
-                        frontendLog(`Sending Video Header (${bytes.length} bytes)`);
-                        await invoke("send_video_header", { header: Array.from(bytes) });
-                        isFirstChunk = false;
-                    }
-                    if (Math.random() < 0.05) frontendLog(`Sending Chunk (${bytes.length} bytes)`);
-                    await invoke("send_video_chunk", { chunk: Array.from(bytes) });
-                }
-            };
-
-            // 4. Start recording with 100ms slices (low latency)
-            recorder.start(100);
             setIsSharing(true);
             frontendLog("Sharing started.");
-
-            // Handle stream stop (user clicks "Stop sharing" in browser UI)
-            stream.getVideoTracks()[0].onended = () => {
-                stopSharing();
-            };
-
         } catch (err) {
             console.error("Error starting share:", err);
+            frontendLog(`Error: ${err}`);
             alert("Failed to start sharing: " + err);
         }
     };
 
     const stopSharing = async () => {
         frontendLog("Stopping share...");
-        if (mediaRecorderRef.current) {
-            mediaRecorderRef.current.stop();
-        }
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(t => t.stop());
-        }
+        await invoke("stop_capture");
         await invoke("stop_server_cmd");
         setIsSharing(false);
     };
@@ -88,27 +59,56 @@ export default function TeacherView() {
             {!isSharing ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
                     <div>
+                        <label>Display: </label>
+                        <select 
+                            value={selectedDisplay} 
+                            onChange={(e) => setSelectedDisplay(Number(e.target.value))}
+                            style={{ padding: '5px' }}
+                        >
+                            {displays.map((d) => (
+                                <option key={d.index} value={d.index}>
+                                    {d.name} ({d.width}x{d.height})
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <div>
                         <label>Port: </label>
                         <input
                             type="number"
                             value={port}
                             onChange={(e) => setPort(Number(e.target.value))}
-                            style={{ padding: '5px' }}
+                            style={{ padding: '5px', width: '80px' }}
                         />
                     </div>
                     <div>
-                        <label>Codec: </label>
-                        <select value={codec} onChange={(e) => setCodec(e.target.value)} style={{ padding: '5px' }}>
-                            <option value="video/webm; codecs=vp9">VP9 (WebM)</option>
-                            <option value="video/webm; codecs=vp8">VP8 (WebM)</option>
-                            <option value="video/webm; codecs=h264">H.264 (WebM)</option>
-                        </select>
+                        <label>FPS: </label>
+                        <input
+                            type="number"
+                            value={fps}
+                            onChange={(e) => setFps(Number(e.target.value))}
+                            min={1}
+                            max={60}
+                            style={{ padding: '5px', width: '60px' }}
+                        />
+                    </div>
+                    <div>
+                        <label>Quality: </label>
+                        <input
+                            type="range"
+                            value={quality}
+                            onChange={(e) => setQuality(Number(e.target.value))}
+                            min={10}
+                            max={100}
+                            style={{ width: '100px' }}
+                        />
+                        <span> {quality}%</span>
                     </div>
                     <button onClick={startSharing}>Start Sharing</button>
                 </div>
             ) : (
                 <div>
-                    <p style={{ color: 'green' }}>Creating Stream on Port {port}...</p>
+                    <p style={{ color: 'green' }}>Streaming on Port {port}...</p>
                     <button onClick={stopSharing} style={{ backgroundColor: '#cc3333' }}>Stop Sharing</button>
                 </div>
             )}

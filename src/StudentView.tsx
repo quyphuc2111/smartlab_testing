@@ -11,19 +11,15 @@ interface ServerInfo {
 export default function StudentView() {
     const [servers, setServers] = useState<ServerInfo[]>([]);
     const [connected, setConnected] = useState(false);
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const mediaSourceRef = useRef<MediaSource | null>(null);
-    const sourceBufferRef = useRef<SourceBuffer | null>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
     const wsRef = useRef<WebSocket | null>(null);
-    const queueRef = useRef<Uint8Array[]>([]);
 
     useEffect(() => {
-        // Start Discovery
         frontendLog("Starting Discovery...");
         invoke("start_discovery").catch(console.error);
 
-        // Listen for events
         const unlisten = listen<ServerInfo>("server-found", (event) => {
+            frontendLog(`Discovered Server at ${event.payload.ip}:${event.payload.port}`);
             setServers((prev) => {
                 const exists = prev.find(s => s.ip === event.payload.ip && s.port === event.payload.port);
                 if (exists) return prev;
@@ -44,40 +40,7 @@ export default function StudentView() {
         ws.binaryType = "arraybuffer";
         wsRef.current = ws;
 
-        const mediaSource = new MediaSource();
-        mediaSourceRef.current = mediaSource;
-        if (videoRef.current) {
-            videoRef.current.src = URL.createObjectURL(mediaSource);
-        }
-
-        mediaSource.addEventListener("sourceopen", () => {
-            try {
-                // Hardcoded codec as in TeacherView. Ideally should negotiate.
-                const sb = mediaSource.addSourceBuffer("video/webm; codecs=vp9");
-                sourceBufferRef.current = sb;
-                sb.mode = "sequence";
-
-                sb.addEventListener("updateend", () => {
-                    processQueue();
-                });
-
-                sb.addEventListener("error", (e) => {
-                    frontendLog("SourceBuffer Error: " + JSON.stringify(e));
-                });
-                frontendLog("MediaSource opened. SourceBuffer created.");
-            } catch (e) {
-                console.error("Error creating SourceBuffer:", e);
-                frontendLog("Error creating SourceBuffer: " + String(e));
-                alert("Error: Codec not supported or MediaSource issue.");
-            }
-        });
-
-        mediaSource.addEventListener("sourceclose", () => {
-            frontendLog("MediaSource closed.");
-        });
-
         ws.onopen = () => {
-            console.log("Connected to server");
             frontendLog("WebSocket Connected.");
             setConnected(true);
         };
@@ -85,27 +48,34 @@ export default function StudentView() {
         ws.onmessage = async (event) => {
             const data = new Uint8Array(event.data);
             if (data.length > 0) {
-                if (Math.random() < 0.05) frontendLog(`Received Chunk (${data.length} bytes)`);
-                queueRef.current.push(data);
-                processQueue();
+                // Decode JPEG and draw to canvas
+                const blob = new Blob([data], { type: 'image/jpeg' });
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = canvasRef.current;
+                    if (canvas) {
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        if (ctx) {
+                            ctx.drawImage(img, 0, 0);
+                        }
+                    }
+                    URL.revokeObjectURL(url);
+                };
+                img.src = url;
             }
         };
 
         ws.onclose = () => {
+            frontendLog("WebSocket Disconnected.");
             setConnected(false);
         };
-    };
 
-    const processQueue = () => {
-        const sb = sourceBufferRef.current;
-        if (sb && !sb.updating && queueRef.current.length > 0) {
-            try {
-                const data = queueRef.current.shift();
-                if (data) sb.appendBuffer(data);
-            } catch (e) {
-                console.error("Append error:", e);
-            }
-        }
+        ws.onerror = (e) => {
+            frontendLog(`WebSocket Error: ${e}`);
+        };
     };
 
     const disconnect = () => {
@@ -123,15 +93,17 @@ export default function StudentView() {
                     <h3>Available Servers:</h3>
                     {servers.length === 0 && <p>Scanning...</p>}
                     {servers.map((s) => (
-                        <div key={`${s.ip}:${s.port}`} className="server-item">
+                        <div key={`${s.ip}:${s.port}`} className="server-item" style={{ margin: '5px 0' }}>
                             <span>{s.ip}:{s.port}</span>
-                            <button onClick={() => connectToServer(s.ip, s.port)}>Connect</button>
+                            <button onClick={() => connectToServer(s.ip, s.port)} style={{ marginLeft: '10px' }}>
+                                Connect
+                            </button>
                         </div>
                     ))}
                     <div style={{ marginTop: '20px' }}>
                         <p>Manual Connect:</p>
                         <input id="manual-ip" placeholder="IP" style={{ marginRight: '5px' }} />
-                        <input id="manual-port" placeholder="Port" type="number" defaultValue={8080} style={{ marginRight: '5px' }} />
+                        <input id="manual-port" placeholder="Port" type="number" defaultValue={8080} style={{ marginRight: '5px', width: '80px' }} />
                         <button onClick={() => {
                             const ip = (document.getElementById('manual-ip') as HTMLInputElement).value;
                             const port = (document.getElementById('manual-port') as HTMLInputElement).value;
@@ -142,11 +114,9 @@ export default function StudentView() {
             ) : (
                 <div>
                     <button onClick={disconnect} style={{ marginBottom: '10px' }}>Disconnect</button>
-                    <video
-                        ref={videoRef}
-                        autoPlay
-                        controls
-                        style={{ width: '100%', border: '1px solid #666' }}
+                    <canvas
+                        ref={canvasRef}
+                        style={{ width: '100%', border: '1px solid #666', backgroundColor: '#000' }}
                     />
                 </div>
             )}
