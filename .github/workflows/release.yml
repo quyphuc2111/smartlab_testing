@@ -24,6 +24,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '01f602195983451bc83e72f4214af2cbc495aa94'
+
+      - name: Install libvpx via vcpkg
+        run: |
+          vcpkg install libvpx:x64-windows-static-md
+          echo "VPX_LIB_DIR=${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/lib" >> $env:GITHUB_ENV
+          echo "VPX_INCLUDE_DIR=${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/include" >> $env:GITHUB_ENV
+          echo "VPX_STATIC=1" >> $env:GITHUB_ENV
+
       - name: Install Frontend dependencies
         run: npm install
 
@@ -31,6 +43,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VPX_LIB_DIR: ${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/lib
+          VPX_INCLUDE_DIR: ${{ github.workspace }}/vcpkg/installed/x64-windows-static-md/include
+          VPX_STATIC: '1'
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'App v__VERSION__'
