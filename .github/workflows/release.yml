@@ -46,7 +46,19 @@ jobs:
           
           # Set environment variables for static linking
           $vcpkgRoot = "$env:VCPKG_ROOT"
-          echo "VPX_LIB_DIR=$vcpkgRoot\installed\x64-windows-static\lib" >> $env:GITHUB_ENV
+          $libDir = "$vcpkgRoot\installed\x64-windows-static\lib"
+          
+          # Debug: List files in lib directory
+          Write-Host "Files in lib directory:"
+          Get-ChildItem -Path $libDir
+          
+          # Rename vpx.lib to libvpx.lib if needed
+          if (Test-Path "$libDir\vpx.lib") {
+            Copy-Item "$libDir\vpx.lib" "$libDir\libvpx.lib"
+            Write-Host "Copied vpx.lib to libvpx.lib"
+          }
+          
+          echo "VPX_LIB_DIR=$libDir" >> $env:GITHUB_ENV
           echo "VPX_INCLUDE_DIR=$vcpkgRoot\installed\x64-windows-static\include" >> $env:GITHUB_ENV
           echo "VPX_VERSION=1.14.1" >> $env:GITHUB_ENV
           echo "VPX_STATIC=1" >> $env:GITHUB_ENV
