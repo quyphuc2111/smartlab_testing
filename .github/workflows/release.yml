@@ -44,25 +44,33 @@ jobs:
         run: |
           vcpkg install libvpx:x64-windows-static
           
-          # Set environment variables for static linking
-          $vcpkgRoot = "$env:VCPKG_ROOT"
+          # Get vcpkg root
+          $vcpkgRoot = $env:VCPKG_ROOT
           $libDir = "$vcpkgRoot\installed\x64-windows-static\lib"
+          $includeDir = "$vcpkgRoot\installed\x64-windows-static\include"
           
           # Debug: List files in lib directory
-          Write-Host "Files in lib directory:"
-          Get-ChildItem -Path $libDir
+          Write-Host "=== Files in lib directory ==="
+          Get-ChildItem -Path $libDir -Recurse
           
-          # Rename vpx.lib to libvpx.lib if needed
+          Write-Host "=== Files in include directory ==="
+          Get-ChildItem -Path $includeDir -Recurse
+          
+          # Copy vpx.lib to libvpx.lib (Rust looks for libvpx)
           if (Test-Path "$libDir\vpx.lib") {
-            Copy-Item "$libDir\vpx.lib" "$libDir\libvpx.lib"
+            Copy-Item "$libDir\vpx.lib" "$libDir\libvpx.lib" -Force
             Write-Host "Copied vpx.lib to libvpx.lib"
           }
           
-          echo "VPX_LIB_DIR=$libDir" >> $env:GITHUB_ENV
-          echo "VPX_INCLUDE_DIR=$vcpkgRoot\installed\x64-windows-static\include" >> $env:GITHUB_ENV
-          echo "VPX_VERSION=1.14.1" >> $env:GITHUB_ENV
-          echo "VPX_STATIC=1" >> $env:GITHUB_ENV
-          echo "VPX_NO_PKG_CONFIG=1" >> $env:GITHUB_ENV
+          # Verify the file exists
+          Write-Host "=== Verifying libvpx.lib ==="
+          if (Test-Path "$libDir\libvpx.lib") {
+            Write-Host "libvpx.lib exists!"
+            Get-Item "$libDir\libvpx.lib"
+          } else {
+            Write-Host "ERROR: libvpx.lib not found!"
+            exit 1
+          }
 
       - name: Install Frontend dependencies
         run: npm install
@@ -71,7 +79,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUSTFLAGS: "-C target-feature=+crt-static"
+          VPX_LIB_DIR: ${{ github.workspace }}\vcpkg\installed\x64-windows-static\lib
+          VPX_INCLUDE_DIR: ${{ github.workspace }}\vcpkg\installed\x64-windows-static\include
+          VPX_VERSION: "1.14.1"
+          VPX_STATIC: "1"
+          VPX_NO_PKG_CONFIG: "1"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'App v__VERSION__'
