@@ -52,6 +52,7 @@ jobs:
           echo "VPX_LIB_DIR=$msys2Path\mingw64\lib" >> $env:GITHUB_ENV
           echo "VPX_INCLUDE_DIR=$msys2Path\mingw64\include" >> $env:GITHUB_ENV
           echo "VPX_NO_PKG_CONFIG=1" >> $env:GITHUB_ENV
+          echo "VPX_VERSION=1.14.1" >> $env:GITHUB_ENV
           
           # Add to PATH for DLLs
           echo "$msys2Path\mingw64\bin" >> $env:GITHUB_PATH
