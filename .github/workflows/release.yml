@@ -34,28 +34,23 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
         with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            mingw-w64-x86_64-libvpx
+          vcpkgGitCommitId: 'c82f74667287d3dc386bce81e44964370c91a289'
 
-      - name: Setup libvpx environment
+      - name: Install libvpx (static)
         shell: pwsh
         run: |
-          # Get MSYS2 installation path
-          $msys2Path = "D:\a\_temp\msys64"
+          vcpkg install libvpx:x64-windows-static
           
-          # Set environment variables for libvpx
-          echo "VPX_LIB_DIR=$msys2Path\mingw64\lib" >> $env:GITHUB_ENV
-          echo "VPX_INCLUDE_DIR=$msys2Path\mingw64\include" >> $env:GITHUB_ENV
-          echo "VPX_NO_PKG_CONFIG=1" >> $env:GITHUB_ENV
+          # Set environment variables for static linking
+          $vcpkgRoot = "$env:VCPKG_ROOT"
+          echo "VPX_LIB_DIR=$vcpkgRoot\installed\x64-windows-static\lib" >> $env:GITHUB_ENV
+          echo "VPX_INCLUDE_DIR=$vcpkgRoot\installed\x64-windows-static\include" >> $env:GITHUB_ENV
           echo "VPX_VERSION=1.14.1" >> $env:GITHUB_ENV
-          
-          # Add to PATH for DLLs
-          echo "$msys2Path\mingw64\bin" >> $env:GITHUB_PATH
+          echo "VPX_STATIC=1" >> $env:GITHUB_ENV
+          echo "VPX_NO_PKG_CONFIG=1" >> $env:GITHUB_ENV
 
       - name: Install Frontend dependencies
         run: npm install
@@ -64,7 +59,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VPX_NO_PKG_CONFIG: '1'
+          RUSTFLAGS: "-C target-feature=+crt-static"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'App v__VERSION__'
